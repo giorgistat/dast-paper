@@ -10,7 +10,9 @@ This repository contains three fully reproducible R scripts corresponding to the
 
 | Script | Description |
 |---------|--------------|
-| `01_simulation_study.R` | Simulation experiments used to evaluate the statistical performance and robustness of the DAST model under controlled conditions. |
+| `01_scenario1_simulation.R` | Simulation to evaluate the predictive performance of the DAST model (Scenario 1). |
+| `01_scenario2_simulation.R` | Simulation to evaluate the predictive performance of the DAST model (Scenario 2). |
+| `simulation functions.R` | Auxiliary functions used in the simulation study. |
 | `02_sth_kenya_application.R` | Application of the DAST model to **soil-transmitted helminth (STH)** prevalence data from Kenya. |
 | `03_lf_madagascar_application.R` | Application of the DAST model to **lymphatic filariasis (LF)** data from Madagascar, including comparison with GLM and GLMM models and projection of MDA rounds needed for elimination. |
 
