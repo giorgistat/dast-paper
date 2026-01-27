@@ -121,28 +121,33 @@ fit_iid_qmc <- function(lf, mda_times, intervention,
                         start = c(0, log(5), qlogis(0.5), log(1)),
                         n_qmc = 1024,
                         trace = 1) {
-
+  
+  ## --- Extract location IDs ---
+  id_loc <- lf$id_loc
+  unique_locs <- unique(id_loc)
+  n_locs <- length(unique_locs)
+  
   ## --- Halton QMC nodes (1D) ---
   halton_z <- qnorm(halton(n = n_qmc, d = 1))
   halton_w <- rep(1 / n_qmc, n_qmc)
-
+  
   ## --- Stable log-sum-exp ---
   log_sum_exp <- function(v) {
     m <- max(v)
     m + log(sum(exp(v - m)))
   }
-
+  
   ## --- Log-likelihood function ---
   logLik_fn <- function(par) {
     y        <- lf$positive
     units_m  <- lf$examined
     n        <- length(y)
-
+    
     beta     <- par[1]
     sigma    <- exp(0.5 * par[2])
     alpha    <- plogis(par[3])
     gamma    <- exp(par[4])          # decay time
-
+    
     mu_fix   <- rep(beta, n)
     mda_eff  <- compute_mda_effect(
       survey_times_data = lf$year,
@@ -152,21 +157,39 @@ fit_iid_qmc <- function(lf, mda_times, intervention,
       gamma             = gamma,
       kappa             = 1
     )
-
+    
+    ## --- Compute log-likelihood by location ---
     logLik <- sum(
-      vapply(seq_len(n), function(i) {
-        eta_k  <- mu_fix[i] + sigma * halton_z
-        p_k    <- mda_eff[i] * plogis(eta_k)
-        log_fk <- log(halton_w) +
-          dbinom(y[i], size = units_m[i], prob = p_k, log = TRUE)
+      vapply(seq_along(unique_locs), function(loc_idx) {
+        # Get indices for this location
+        loc_id <- unique_locs[loc_idx]
+        idx_loc <- which(id_loc == loc_id)
+        
+        # For each QMC node (random effect value)
+        log_fk <- vapply(seq_along(halton_z), function(k) {
+          u_k <- halton_z[k]
+          
+          # Contribution from all observations at this location
+          log_lik_loc <- sum(
+            vapply(idx_loc, function(i) {
+              eta_i <- mu_fix[i] + sigma * u_k
+              p_i   <- mda_eff[i] * plogis(eta_i)
+              dbinom(y[i], size = units_m[i], prob = p_i, log = TRUE)
+            }, numeric(1))
+          )
+          
+          log(halton_w[k]) + log_lik_loc
+        }, numeric(1))
+        
+        # Integrate over random effect for this location
         log_sum_exp(log_fk)
       }, numeric(1))
     )
-
+    
     ## --- total penalised log-likelihood ---
     logLik - penalty_alpha(alpha) - penalty_gamma(gamma)
   }
-
+  
   ## --- Run optimisation ---
   raw_fit <- nlminb(
     start,
@@ -174,7 +197,7 @@ fit_iid_qmc <- function(lf, mda_times, intervention,
     control   = list(trace = trace, eval.max = 2000,
                      iter.max = 1000, rel.tol = 1e-8)
   )
-
+  
   ## --- Transform parameters to natural scale ---
   par_opt <- raw_fit$par
   est <- c(
@@ -183,7 +206,7 @@ fit_iid_qmc <- function(lf, mda_times, intervention,
     alpha   = plogis(par_opt[3]),
     gamma   = exp(par_opt[4])
   )
-
+  
   ## --- Return structured output ---
   list(
     estimates   = est,
@@ -194,6 +217,7 @@ fit_iid_qmc <- function(lf, mda_times, intervention,
     qmc_nodes   = halton_z
   )
 }
+
 
 ## 2.3  CRPS utility ----------------------------------------------------------
 crps_sample <- function(y, x) {
@@ -213,11 +237,11 @@ compute_crps_all <- function(lf, intervention, mda_times,
   idx    <- which(lf$test_set)
   y_true <- lf$positive[idx]
   n_obs  <- lf$examined[idx]
-
+  
   # Binomial draws -----------------------------------------------------------
   p_bin <- plogis(predict(glm_binom, lf[idx, ], type = "link"))
   y_bin <- replicate(M, rbinom(length(idx), n_obs, p_bin))
-
+  
   # GLMM draws ---------------------------------------------------------------
   b0  <- fixef(glmm_fit)[1]
   b1  <- fixef(glmm_fit)["cum_mda"]
@@ -228,7 +252,7 @@ compute_crps_all <- function(lf, intervention, mda_times,
     rbinom(M * length(idx), rep(n_obs, each = M), c(p_glm)),
     nrow = M
   )
-
+  
   # DAST draws ---------------------------------------------------------------
   beta  <- dast_fit$estimates["beta"]
   sigma <- sqrt(dast_fit$estimates["sigma2"])
@@ -236,18 +260,18 @@ compute_crps_all <- function(lf, intervention, mda_times,
   gamma <- dast_fit$estimates["gamma"]
   z     <- dast_fit$qmc_nodes
   w     <- rep(1 / length(z), length(z))
-
+  
   mda_eff <- compute_mda_effect(
     lf$year[idx], mda_times, intervention[idx, ], alpha, gamma
   )
-
+  
   z_samp <- matrix(sample(z, M * length(idx), TRUE, prob = w), nrow = M)
   p_da   <- sweep(plogis(beta + sigma * z_samp), 2, mda_eff, `*`)
   y_da   <- matrix(
     rbinom(M * length(idx), rep(n_obs, each = M), c(p_da)),
     nrow = M
   )
-
+  
   CRPS <- tibble(
     Binomial = vapply(seq_along(idx), function(j)
       crps_sample(y_true[j], y_bin[, j]), numeric(1)),
@@ -256,7 +280,7 @@ compute_crps_all <- function(lf, intervention, mda_times,
     DAST     = vapply(seq_along(idx), function(j)
       crps_sample(y_true[j], y_da[, j]), numeric(1))
   )
-
+  
   colMeans(CRPS)
 }
 
@@ -299,15 +323,15 @@ boot_est <- replicate(B, {
   sigma <- sqrt(fit_dast$estimates["sigma2"])
   alpha <- fit_dast$estimates["alpha"]
   gamma <- fit_dast$estimates["gamma"]
-
+  
   z <- sigma * rnorm(nrow(lf))
   mda_eff <- compute_mda_effect(lf$year, mda_times, intervention, alpha, gamma)
   p_draws <- plogis(beta + z) * mda_eff
-
+  
   y_new <- rbinom(nrow(lf), lf$examined, p_draws)
   lf_boot <- lf
   lf_boot$positive <- y_new
-
+  
   fit_b <- tryCatch(
     fit_iid_qmc(
       lf_boot, mda_times, intervention, compute_mda_effect,
@@ -317,7 +341,7 @@ boot_est <- replicate(B, {
     ),
     error = function(e) NULL
   )
-
+  
   if (!is.null(fit_b$converged) && fit_b$converged) {
     return(unlist(fit_b$estimates))
   } else {
@@ -366,7 +390,7 @@ ci_nat      <- boot_cis
 
 latex_table <- data.frame(
   Parameter = c("beta", "cum\\_mda", "alpha", "gamma", "Variance", "CRPS"),
-
+  
   Binomial = c(
     sprintf("%.3f (%.3f–%.3f)",
             beta_binom, ci_glm["(Intercept)", 1], ci_glm["(Intercept)", 2]),
@@ -377,7 +401,7 @@ latex_table <- data.frame(
     "--",
     sprintf("%.3f", crps_all["Binomial"])
   ),
-
+  
   GLMM = c(
     sprintf("%.3f (%.3f–%.3f)",
             beta_glmm, ci_glmm_fix[1, 1], ci_glmm_fix[1, 2]),
@@ -389,7 +413,7 @@ latex_table <- data.frame(
             varU_glmm, ci_varU[1], ci_varU[2]),
     sprintf("%.3f", crps_all["GLMM"])
   ),
-
+  
   DAST = c(
     sprintf("%.3f (%.3f–%.3f)",
             beta_dast, ci_nat["beta", 1],  ci_nat["beta", 2]),
@@ -431,7 +455,7 @@ compute_anpit_glm <- function(glm_fit, lf, test_idx,
   y_obs    <- lf$positive[idx]
   n_obs    <- lf$examined[idx]
   p_hat    <- plogis(predict(glm_fit, newdata = lf[idx, ], type = "link"))
-
+  
   AnPIT_mat <- sapply(seq_along(idx), function(i) {
     Fy_minus <- pbinom(y_obs[i] - 1L, size = n_obs[i], prob = p_hat[i])
     Fy       <- pbinom(y_obs[i],       size = n_obs[i], prob = p_hat[i])
@@ -445,7 +469,7 @@ compute_anpit_glm <- function(glm_fit, lf, test_idx,
       )
     )
   })
-
+  
   data.frame(
     u     = u_grid,
     AnPIT = rowMeans(AnPIT_mat, na.rm = TRUE),
@@ -463,18 +487,18 @@ compute_anpit_glmm <- function(glmer_fit, lf, test_idx,
   sigma_u <- sqrt(as.data.frame(VarCorr(glmer_fit))$vcov[1])
   z <- qnorm(halton(n = n_qmc, d = 1))
   w <- rep(1 / n_qmc, n_qmc)
-
+  
   idx      <- which(test_idx)
   y_obs    <- lf$positive[idx]
   n_obs    <- lf$examined[idx]
   cum_mda  <- lf$cum_mda[idx]
-
+  
   mixture_cdf <- function(y, i) {
     linpred <- beta0 + beta1 * cum_mda[i] + sigma_u * z
     p_k     <- plogis(linpred)
     sum(w * pbinom(y, size = n_obs[i], prob = p_k))
   }
-
+  
   AnPIT_mat <- sapply(seq_along(idx), function(i) {
     Fy_minus <- mixture_cdf(y_obs[i] - 1L, i)
     Fy       <- mixture_cdf(y_obs[i],       i)
@@ -488,7 +512,7 @@ compute_anpit_glmm <- function(glmer_fit, lf, test_idx,
       )
     )
   })
-
+  
   data.frame(
     u     = u_grid,
     AnPIT = rowMeans(AnPIT_mat, na.rm = TRUE),
@@ -505,25 +529,25 @@ compute_anpit_dast <- function(dast_fit, lf, test_idx, int_mat,
   sigma <- sqrt(dast_fit$estimates["sigma2"])
   alpha <- dast_fit$estimates["alpha"]
   gamma <- dast_fit$estimates["gamma"]
-
+  
   z <- qnorm(halton(n = n_qmc, d = 1))
   w <- rep(1 / n_qmc, n_qmc)
-
+  
   idx      <- which(test_idx)
   y_obs    <- lf$positive[idx]
   n_obs    <- lf$examined[idx]
   years    <- lf$year[idx]
-
+  
   mda_eff <- compute_mda_effect(
     years, mda_times,
     int_mat[idx, ], alpha, gamma, kappa = 1
   )
-
+  
   mixture_cdf <- function(y, i) {
     p_k <- mda_eff[i] * plogis(beta + sigma * z)
     sum(w * pbinom(y, size = n_obs[i], prob = p_k))
   }
-
+  
   AnPIT_mat <- sapply(seq_along(idx), function(i) {
     Fy_minus <- mixture_cdf(y_obs[i] - 1L, i)
     Fy       <- mixture_cdf(y_obs[i],       i)
@@ -537,7 +561,7 @@ compute_anpit_dast <- function(dast_fit, lf, test_idx, int_mat,
       )
     )
   })
-
+  
   data.frame(
     u     = u_grid,
     AnPIT = rowMeans(AnPIT_mat, na.rm = TRUE),
@@ -629,16 +653,16 @@ check_threshold_reduction <- function(pred_out, x, baseline_idx = 1) {
   n <- dim(pred_out)[1]  # number of locations
   T <- dim(pred_out)[2]  # number of time points
   J <- dim(pred_out)[3]  # number of interventions
-
+  
   results <- character(n)
-
+  
   for (i in 1:n) {
     baseline <- pred_out[i, baseline_idx, 1]
     if (baseline < x) {
       results[i] <- "Already below"
       next
     }
-
+    
     found <- FALSE
     for (j in 1:J) {
       if (any(pred_out[i, 1:3, j] < x)) {
@@ -647,12 +671,12 @@ check_threshold_reduction <- function(pred_out, x, baseline_idx = 1) {
         break
       }
     }
-
+    
     if (!found) {
       results[i] <- "> 3 rounds"
     }
   }
-
+  
   results
 }
 
@@ -702,14 +726,14 @@ pdf("predicted_rounds.pdf")
 ggplot() +
   geom_sf(data = mada_admin0, fill = NA,
           colour = "black", linewidth = 0.6) +
-
+  
   geom_point(
     data   = lf_points,
     aes(x = x, y = y, fill = mda_rounds_predicted),
     shape  = 21, size = 2,
     colour = "white", stroke = 0.2
   ) +
-
+  
   # Invisible point to ensure "1 round" appears in legend (robust to empty class)
   geom_point(
     data = data.frame(
@@ -724,7 +748,7 @@ ggplot() +
     show.legend = TRUE,
     inherit.aes = FALSE
   ) +
-
+  
   scale_fill_manual(
     values = fill_colors,
     name   = "Rounds needed",
