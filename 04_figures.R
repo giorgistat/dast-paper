@@ -618,14 +618,15 @@ sth_clean <- sth |>
 # Prevalence vs. cum mda rounds
 ggplot(sth_clean, aes(x = factor(cum_mda), y = prev)) +
   geom_boxplot(outlier.shape = NA, fill = "lightblue", alpha = 0.6) +
-  geom_jitter(width = 0.15, size = .7, alpha = 0.3) +
+  geom_jitter(width = 0.15, size = 0.7, alpha = 0.3) +
   facet_wrap(~ specie) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_y_log10(labels = scales::percent_format(accuracy = 1)) +
   labs(
     x = "Cumulative rounds of MDA",
-    y = "STH prevalence",
+    y = "STH prevalence (log scale)"
   ) +
   theme_minimal(base_size = 12)
+
 
 ggsave(filename = "figures/cum_mda_kenya.pdf",
        device = cairo_pdf, 
@@ -757,10 +758,10 @@ ggsave(filename = "figures/lf_madagascar_panels.pdf",
 ggplot(lf, aes(x = factor(mda_rounds), y = prevalence)) +
   geom_boxplot(outlier.shape = NA, fill = "lightblue", alpha = 0.6) +
   geom_jitter(width = 0.15, size = 1, alpha = 0.5) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_y_log10(labels = scales::percent_format(accuracy = 1)) +
   labs(
     x = "Cumulative rounds of MDA",
-    y = "LF prevalence",
+    y = "LF prevalence (log scale)"
   ) +
   theme_minimal(base_size = 12)
 
