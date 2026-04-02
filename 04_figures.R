@@ -282,98 +282,182 @@ ggsave("figures/figure1_schematic.pdf", width = 10, height = 7)
 
 # FIGURE 3. --------------------------------------------------------------------
 
-# FIGURE 4. --------------------------------------------------------------------
+sim_df <- qs::qread("simulations.qs")
 
-# Load simulation data
-sim_df <- qs::qread("data/simulations.qs")
-
-# Tidy categorical columns
 sim_df <- sim_df |>
-  mutate(scenario = factor(scenario, levels = 1:2,
-                           labels = c("Scenario 1", "Scenario 2")),
-         penalty = factor(penalty, levels = c("no", "yes"),
-                          labels = c("Unpenalised","Penalised")),
-         time_f = factor(time, levels = paste0("T", 1:5),
-                         labels = paste0("t=", 0:4))) |>
-  filter(!is.na(pred_prev))
+  dplyr::mutate(
+    scenario = factor(scenario, levels = 1:2,
+                      labels = c("Scenario 1", "Scenario 2")),
+    penalty  = factor(penalty, levels = c("no", "yes"),
+                      labels = c("Unpenalised", "Penalised")),
+    time_f   = factor(time, levels = paste0("T", 1:5),
+                      labels = paste0("t=", 0:4))
+  ) |>
+  dplyr::filter(!is.na(pred_prev))
 
-# 1) Cell-level logit spread across replicates (no region/time averaging here)
-cell_scale <- sim_df |> 
-  group_by(region, scenario, penalty, time)  |> 
-  summarise(S_L = sd(pred_logit,  na.rm = TRUE),  # sd across replicates in this cell
-            .groups = "drop")
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.  Shared intermediate computations
+# ─────────────────────────────────────────────────────────────────────────────
 
-# 2) Per-observation local derivative & standardised error (zP)
-std_obs <- sim_df |> 
-  mutate(deriv_local = pred_prev * (1 - pred_prev)) |> 
-  inner_join(cell_scale, by = c("region", "scenario", "penalty","time")) |>  
-  mutate(zP = (pred_prev - true_prev) / (deriv_local * S_L))
+# sd of predicted logits per (region, scenario, penalty, time)
+cell_scale <- sim_df |>
+  dplyr::group_by(region, scenario, penalty, time) |>
+  dplyr::summarise(S_L = sd(pred_logit, na.rm = TRUE), .groups = "drop")
 
-# 3) Average over REGIONS within each replicate (since we don't care about regional diffs)
-#    -> regional mean of zP and of zP^2 per (scenario, penalty, time, sim)
-std_rep <- std_obs  |> 
-  group_by(scenario, penalty, time_f, sim) |> 
-  summarise(
-    zP  = mean(zP,  na.rm = TRUE),        
-    zP_ms   = mean(zP^2, na.rm = TRUE),
-    zP_ma  = mean(abs(zP), na.rm = TRUE),  
-    .groups = "drop"
-  ) 
+# Per-observation standardised error
+std_obs <- sim_df |>
+  dplyr::mutate(deriv_local = pred_prev * (1 - pred_prev)) |>
+  dplyr::inner_join(cell_scale, by = c("region", "scenario", "penalty", "time")) |>
+  dplyr::mutate(zP = (pred_prev - true_prev) / (deriv_local * S_L))
 
-# 4) Summarise across REPLICATES for time-wise plots
-std_sum <- std_rep |> 
-  group_by(scenario, penalty, time_f) |> 
-  summarise(
-    SBias = mean(zP, na.rm = TRUE), 
-    SBias_q25 = quantile(zP, 0.25, na.rm = TRUE),
-    SBias_q75 = quantile(zP, 0.75, na.rm = TRUE),
-    SBias_q05 = quantile(zP, 0.05, na.rm = TRUE),
-    SBias_q95 = quantile(zP, 0.95, na.rm = TRUE),
-    sRMSE = sqrt(mean(zP_ms, na.rm = TRUE)),
-    sMAE = median(zP_ma, na.rm = TRUE),
+# Average over regions within each replicate
+std_rep <- std_obs |>
+  dplyr::group_by(scenario, penalty, time_f, sim) |>
+  dplyr::summarise(
+    zP     = mean(zP,    na.rm = TRUE),
+    zP_ms  = mean(zP^2,  na.rm = TRUE),
+    zP_ma  = mean(abs(zP), na.rm = TRUE),
     .groups = "drop"
   )
 
-# Set-up for the figures
-pal <- c("Unpenalised"="#5DA5DA","Penalised"="#F15854")
-t4_col <- which(levels(factor(paste0("t=",0:4)))=="t=4")
-theme_pub <- theme_minimal(base_size=13) +
-  theme(panel.grid.minor=element_blank(),
-        strip.text=element_text(face="bold"),
-        legend.position="top")
+# Summarise across replicates
+std_sum <- std_rep |>
+  dplyr::group_by(scenario, penalty, time_f) |>
+  dplyr::summarise(
+    SBias     = mean(zP,    na.rm = TRUE),
+    SBias_q25 = quantile(zP, 0.25, na.rm = TRUE),
+    SBias_q75 = quantile(zP, 0.75, na.rm = TRUE),
+    sRMSE     = sqrt(mean(zP_ms, na.rm = TRUE)),
+    .groups   = "drop"
+  )
 
-# Standardised bias plot (sBias)
-sBias <- ggplot(std_sum, aes(x=time_f, y=SBias,
-                             colour=penalty, group=penalty)) +
-  annotate("rect", xmin=t4_col-0.5, xmax=t4_col+0.5, ymin=-Inf, ymax=Inf, alpha=0.08) +
-  geom_errorbar(aes(ymin=SBias_q25, ymax=SBias_q75),
-                width=0.15, linewidth=0.4, alpha=0.6) + 
-  geom_line(linewidth=1) +
-  geom_point(size=2.8, shape = 21, fill = "white", stroke=1) +
-  geom_hline(yintercept=0, linetype="dashed", linewidth=0.4) +
-  facet_wrap(~scenario, nrow=1) +
-  scale_colour_manual("", values=pal) +
+# IU-level mean e_{k,t} across replicates
+mean_e_iu <- std_obs |>
+  dplyr::group_by(region, scenario, penalty, time_f) |>
+  dplyr::summarise(
+    mean_e = mean(zP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3.  Shared theme and palette
+# ─────────────────────────────────────────────────────────────────────────────
+
+pal      <- c("Unpenalised" = "#5DA5DA", "Penalised" = "#F15854")
+t4_col   <- which(levels(factor(paste0("t=", 0:4))) == "t=4")
+
+theme_pub <- theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text       = element_text(face = "bold"),
+    legend.position  = "top"
+  )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4.  Figure: sBias over time
+# ─────────────────────────────────────────────────────────────────────────────
+
+sBias <- ggplot(std_sum,
+                aes(x = time_f, y = SBias, colour = penalty, group = penalty)) +
+  annotate("rect",
+           xmin = t4_col - 0.5, xmax = t4_col + 0.5,
+           ymin = -Inf, ymax = Inf, alpha = 0.08) +
+  geom_errorbar(aes(ymin = SBias_q25, ymax = SBias_q75),
+                width = 0.15, linewidth = 0.4, alpha = 0.6) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.8, shape = 21, fill = "white", stroke = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
+  facet_wrap(~scenario, nrow = 1) +
+  scale_colour_manual("", values = pal) +
   labs(x = NULL, y = "sBias") +
   theme_pub
-sBias
 
-ggsave("figures/sim_bias.pdf", sBias, width= 9, height= 5, dpi=300)
+ggsave("figures/sim_bias.pdf", sBias, width = 9, height = 5, dpi = 300)
+message("Saved figures/sim_bias.pdf")
 
-# FIGURE 5. --------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 5.  Figure: sRMSE over time
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Standardised root mean square error (sRMSE)
-sRMSE <- ggplot(std_sum, aes(x=time_f, y=sRMSE, colour=penalty, group=penalty)) +
-  annotate("rect", xmin=t4_col-0.5, xmax=t4_col+0.5, ymin=-Inf, ymax=Inf, alpha=0.08) +
-  geom_line(linewidth=1.1) + geom_point(size=2) +
-  facet_wrap(~scenario, nrow=1) +
-  scale_colour_manual("", values=pal) +
-  labs(#title="Standardised RMSE over time",
-    #subtitle="t = 4 (forecast) shaded",
-    x=NULL, y="sRMSE") +
+sRMSE <- ggplot(std_sum,
+                aes(x = time_f, y = sRMSE, colour = penalty, group = penalty)) +
+  annotate("rect",
+           xmin = t4_col - 0.5, xmax = t4_col + 0.5,
+           ymin = -Inf, ymax = Inf, alpha = 0.08) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2) +
+  facet_wrap(~scenario, nrow = 1) +
+  scale_colour_manual("", values = pal) +
+  labs(x = NULL, y = "sRMSE") +
   theme_pub
-sRMSE
 
-ggsave("figures/sim_RMSE.pdf", sRMSE, width = 9, height = 5, dpi=300)
+ggsave("figures/sim_RMSE.pdf", sRMSE, width = 9, height = 5, dpi = 300)
+message("Saved figures/sim_RMSE.pdf")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6.  Figure: IU-level choropleth of mean e_{k,t}
+#
+#   The four IUs (A, B, C, D) are arranged in a 2x2 grid on [0,2]x[0,2].
+#   Adjust the polygon coordinates below if your simulation uses a different
+#   region layout.
+#     A = [0,1]x[0,1]   B = [1,2]x[0,1]
+#     C = [0,1]x[1,2]   D = [1,2]x[1,2]
+# ─────────────────────────────────────────────────────────────────────────────
+
+iu_boxes <- list(
+  R1 = sf::st_polygon(list(rbind(c(0,0),c(1,0),c(1,1),c(0,1),c(0,0)))),
+  R2 = sf::st_polygon(list(rbind(c(1,0),c(2,0),c(2,1),c(1,1),c(1,0)))),
+  R3 = sf::st_polygon(list(rbind(c(0,1),c(1,1),c(1,2),c(0,2),c(0,1)))),
+  R4 = sf::st_polygon(list(rbind(c(1,1),c(2,1),c(2,2),c(1,2),c(1,1))))
+)
+
+iu_sf <- sf::st_sf(
+  region   = names(iu_boxes),
+  geometry = sf::st_sfc(iu_boxes),
+  crs      = NA_crs_
+) |>
+  dplyr::mutate(
+    x_cent = c(0.5, 1.5, 0.5, 1.5),
+    y_cent = c(0.5, 0.5, 1.5, 1.5)
+  )
+
+plot_sf <- iu_sf |>
+  dplyr::inner_join(mean_e_iu, by = "region")
+
+lim <- range(plot_sf$mean_e)
+
+choro <- ggplot(plot_sf) +
+  geom_sf(aes(fill = mean_e), colour = "white", linewidth = 0.7) +
+  geom_text(aes(x = x_cent, y = y_cent, label = region),
+            size = 3.5, fontface = "bold", colour = "grey20") +
+  facet_grid(rows = vars(scenario, penalty),
+             cols = vars(time_f)) +
+  scale_fill_gradient2(
+    low      = "#d6604d",
+    mid      = "white",
+    high     = "#4393c3",
+    midpoint = sum(lim)/2,
+    limits   = lim,
+    name     = expression(bar(e)[kt])
+  ) +
+  labs(
+    title   = expression("Mean standardised prediction error by IU and time point"),
+    x = NULL, y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text       = element_blank(),
+    axis.ticks      = element_blank(),
+    panel.grid      = element_blank(),
+    strip.text      = element_text(face = "bold", size = 9),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold", size = 12),
+    plot.caption    = element_text(size = 9, colour = "grey40")
+  )
+
+ggsave("figures/sim_choropleth_e.pdf", choro,
+       width = 14, height = 9, dpi = 300)
+message("Saved figures/sim_choropleth_e.pdf")
 
 # FIGURE 6. --------------------------------------------------------------------
 
