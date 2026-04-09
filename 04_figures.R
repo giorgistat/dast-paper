@@ -404,12 +404,14 @@ message("Saved figures/sim_RMSE.pdf")
 #     C = [0,1]x[1,2]   D = [1,2]x[1,2]
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 iu_boxes <- list(
-  R1 = sf::st_polygon(list(rbind(c(0,0),c(1,0),c(1,1),c(0,1),c(0,0)))),
-  R2 = sf::st_polygon(list(rbind(c(1,0),c(2,0),c(2,1),c(1,1),c(1,0)))),
-  R3 = sf::st_polygon(list(rbind(c(0,1),c(1,1),c(1,2),c(0,2),c(0,1)))),
-  R4 = sf::st_polygon(list(rbind(c(1,1),c(2,1),c(2,2),c(1,2),c(1,1))))
+  U1 = sf::st_polygon(list(rbind(c(0,0),c(1,0),c(1,1),c(0,1),c(0,0)))),
+  U2 = sf::st_polygon(list(rbind(c(1,0),c(2,0),c(2,1),c(1,1),c(1,0)))),
+  U3 = sf::st_polygon(list(rbind(c(0,1),c(1,1),c(1,2),c(0,2),c(0,1)))),
+  U4 = sf::st_polygon(list(rbind(c(1,1),c(2,1),c(2,2),c(1,2),c(1,1))))
 )
+
 
 iu_sf <- sf::st_sf(
   region   = names(iu_boxes),
@@ -421,6 +423,13 @@ iu_sf <- sf::st_sf(
     y_cent = c(0.5, 0.5, 1.5, 1.5)
   )
 
+mean_e_iu <- mean_e_iu |>
+  dplyr::mutate(region = dplyr::recode(region,
+                                       R1 = "U1",
+                                       R2 = "U2",
+                                       R3 = "U3",
+                                       R4 = "U4"
+  ))
 plot_sf <- iu_sf |>
   dplyr::inner_join(mean_e_iu, by = "region")
 
@@ -432,13 +441,11 @@ choro <- ggplot(plot_sf) +
             size = 3.5, fontface = "bold", colour = "grey20") +
   facet_grid(rows = vars(scenario, penalty),
              cols = vars(time_f)) +
-  scale_fill_gradient2(
-    low      = "#d6604d",
-    mid      = "white",
-    high     = "#4393c3",
-    midpoint = sum(lim)/2,
-    limits   = lim,
-    name     = expression(bar(e)[kt])
+  scale_fill_gradient(
+    low  = "#deebf7",   # very light
+    high = "#08519c",   # dark
+    limits = lim,
+    name = expression(bar(e)[kt])
   ) +
   labs(
     title   = expression("Mean standardised prediction error by IU and time point"),
@@ -454,6 +461,7 @@ choro <- ggplot(plot_sf) +
     plot.title      = element_text(face = "bold", size = 12),
     plot.caption    = element_text(size = 9, colour = "grey40")
   )
+
 
 ggsave("figures/sim_choropleth_e.pdf", choro,
        width = 14, height = 9, dpi = 300)
